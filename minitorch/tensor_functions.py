@@ -341,6 +341,8 @@ class View(Function):
     @staticmethod
     def backward(ctx: Context, grad_output: Tensor) -> Tuple[Tensor, float]:
         (original,) = ctx.saved_values
+        if not grad_output._tensor.is_contiguous():
+            grad_output = grad_output.contiguous()
         return (
             minitorch.Tensor.make(
                 grad_output._tensor._storage, original, backend=grad_output.backend
@@ -589,22 +591,37 @@ def ones_tensor_from_numpy(shape, backend: TensorBackend = SimpleBackend):
 # Gradient check for tensors
 
 
-import torch
-
 def grad_central_difference(
-    f: Any, *vals: Tensor, arg: int = 0, epsilon: float = 1e-6, ind: UserIndex
+    f: Any, *vals: Tensor, arg: int = 0, epsilon: float = 1e-2, ind: UserIndex
 ) -> float:
     x = vals[arg]
-    up_np = np.zeros(x.shape, dtype=np.float64)
-    up_np[ind] = epsilon
-    vals1 = [torch.tensor(x.to_numpy().astype(np.float64)) if j != arg else torch.tensor(x.to_numpy().astype(np.float64) + up_np) for j, x in enumerate(vals)]
-    vals2 = [torch.tensor(x.to_numpy().astype(np.float64)) if j != arg else torch.tensor(x.to_numpy().astype(np.float64) - up_np) for j, x in enumerate(vals)]
-    delta = float(f(*vals1).sum() - f(*vals2).sum().numpy())
-    # print(f"Debug in grad_central_difference: delta {delta}")
+    # MiniTorch stores float32 values, so use a step that survives rounding.
+    coordinate = abs(float(x[ind]))
+    epsilon = min(0.1, epsilon * max(1.0, coordinate))
+
+    def shifted(sign: float):
+        shifted_vals = []
+        for j, v in enumerate(vals):
+            storage = v._tensor._storage.copy()
+            if j == arg:
+                storage[v._tensor.index(ind)] += sign * epsilon
+            shifted_vals.append(
+                minitorch.Tensor.make(
+                    storage, v.shape, v._tensor.strides, backend=v.backend
+                )
+            )
+        return shifted_vals
+
+    vals1 = shifted(1.0)
+    vals2 = shifted(-1.0)
+    # Subtract elementwise before summing to avoid float32 cancellation.
+    out1 = f(*vals1).to_numpy().astype(np.float64)
+    out2 = f(*vals2).to_numpy().astype(np.float64)
+    delta = np.sum(out1 - out2, dtype=np.float64)
     return delta / (2.0 * epsilon)
 
 
-def grad_check(f: Any, *vals: Tensor, tol=1e-6) -> None:
+def grad_check(f: Any, *vals: Tensor, tol=1e-6, epsilon: float = 1e-2) -> None:
     for x in vals:
         x.requires_grad_(True)
         x.zero_grad_()
@@ -622,7 +639,7 @@ def grad_check(f: Any, *vals: Tensor, tol=1e-6) -> None:
     """
     for i, x in enumerate(vals):
         ind = x._tensor.sample()
-        check = grad_central_difference(f, *vals, arg=i, ind=ind)
+        check = grad_central_difference(f, *vals, arg=i, ind=ind, epsilon=epsilon)
         assert x.grad is not None
         np.testing.assert_allclose(
             x.grad[ind],

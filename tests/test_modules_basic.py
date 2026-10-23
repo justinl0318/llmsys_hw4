@@ -1,6 +1,5 @@
 import pytest
 import minitorch
-from minitorch.cuda_kernel_ops import CudaKernelOps
 
 import numpy as np
 import torch
@@ -10,10 +9,12 @@ import numba
 np.random.seed(3)
 
 
-_BACKENDS = [pytest.param(
-                 minitorch.TensorBackend(CudaKernelOps), 
-                 marks=pytest.mark.skipif(not numba.cuda.is_available(), reason="No GPU")
-             )]
+if numba.cuda.is_available():
+    from minitorch.cuda_kernel_ops import CudaKernelOps
+
+    _BACKENDS = [pytest.param(minitorch.TensorBackend(CudaKernelOps))]
+else:
+    _BACKENDS = [pytest.param(None, marks=pytest.mark.skip(reason="No GPU"))]
 
 
 @pytest.mark.a2_2
@@ -208,7 +209,7 @@ def test_layernorm(batch_size, dim, eps, backend):
     layer_ = torch.nn.LayerNorm(
         normalized_shape=dim, eps=eps
     )
-    x_minitorch = minitorch.tensor(x.tolist(), backend=backend)
+    x_minitorch = minitorch.tensor(x.tolist(), backend=backend, requires_grad=True)
     x_torch = torch.tensor(x.tolist(), dtype=torch.float32, requires_grad=True)
 
     result = layer(x_minitorch)

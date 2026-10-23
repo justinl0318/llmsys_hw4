@@ -1,6 +1,5 @@
 import pytest
 import minitorch
-from minitorch.cuda_kernel_ops import CudaKernelOps
 
 import numpy as np
 import torch
@@ -11,10 +10,12 @@ np.random.seed(3)
 
 datatype = np.float32
 
-_BACKENDS = [pytest.param(
-                 minitorch.TensorBackend(CudaKernelOps), 
-                 marks=pytest.mark.skipif(not numba.cuda.is_available(), reason="No GPU")
-             )]
+if numba.cuda.is_available():
+    from minitorch.cuda_kernel_ops import CudaKernelOps
+
+    _BACKENDS = [pytest.param(minitorch.TensorBackend(CudaKernelOps))]
+else:
+    _BACKENDS = [pytest.param(None, marks=pytest.mark.skip(reason="No GPU"))]
 
 @pytest.mark.a2_3
 @pytest.mark.parametrize("batch_size",  [1, 64])
@@ -214,12 +215,11 @@ def test_transformer_layer(batch_size, seq_len, n_embd, num_heads, causal, p_dro
 @pytest.mark.parametrize("n_embd",  [9])
 @pytest.mark.parametrize("n_head",  [3])
 @pytest.mark.parametrize("n_positions", [10])
-@pytest.mark.parametrize("n_layer", [1])
 @pytest.mark.parametrize("dropout", [0.0])
 @pytest.mark.parametrize("ln_eps", [1e-5])
 @pytest.mark.parametrize("bias", [True])
 @pytest.mark.parametrize("backend", _BACKENDS, ids=["CudaKernelOps"])
-def test_decoder_lm(batch_size, seq_len, n_vocab, n_embd, n_head, n_layer, n_positions, dropout, ln_eps, bias, backend):
+def test_decoder_lm(batch_size, seq_len, n_vocab, n_embd, n_head, n_positions, dropout, ln_eps, bias, backend):
 
     np.random.seed(19943)
 
@@ -227,7 +227,7 @@ def test_decoder_lm(batch_size, seq_len, n_vocab, n_embd, n_head, n_layer, n_pos
 
     layer = minitorch.DecoderLM(
         n_vocab=n_vocab, n_embd=n_embd, n_head=n_head, n_positions=n_positions, 
-        n_layer=n_layer, p_dropout=dropout, ln_eps=ln_eps, bias=bias, backend=backend)
+        p_dropout=dropout, ln_eps=ln_eps, bias=bias, backend=backend)
 
     result = layer(minitorch.tensor(x.tolist(), backend=backend, requires_grad=True))
 

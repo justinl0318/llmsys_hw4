@@ -123,10 +123,12 @@ def test_log_softmax(t: Tensor) -> None:
 import numba
 
 GENERAL_SHAPES = [(2, 5), (3, 8), (64, 128)]
-_BACKENDS = [pytest.param(
-                 minitorch.TensorBackend(minitorch.CudaKernelOps), 
-                 marks=pytest.mark.skipif(not numba.cuda.is_available(), reason="No GPU")
-             )] 
+if numba.cuda.is_available():
+    from minitorch.cuda_kernel_ops import CudaKernelOps
+
+    _BACKENDS = [pytest.param(minitorch.TensorBackend(CudaKernelOps))]
+else:
+    _BACKENDS = [pytest.param(None, marks=pytest.mark.skip(reason="No GPU"))]
 
 
 @pytest.mark.parametrize("sizes", GENERAL_SHAPES)
@@ -163,7 +165,7 @@ def test_a2_logsumexp(sizes, backend):
     dim=1
     
     x = np.random.randn(*sizes).astype(datatype)
-    A = minitorch.tensor(x.tolist(), backend=backend)
+    A = minitorch.tensor(x.tolist(), backend=backend, requires_grad=True)
     _A = torch.tensor(x, dtype=torch.float32, requires_grad=True)
 
     result = minitorch.logsumexp(A, dim=dim)
