@@ -197,10 +197,12 @@ __inline__ __device__ void blockReduce<ReduceType::kSum, 4>(float *pval) {
 
 template <>
 __inline__ __device__ void blockReduce<ReduceType::kMax, 1>(float *pval) {
-  const int num = 1;
+  // IDEA:
+  // reduce each warp first, then reduce the warp results.
+  const int num = 1; // the number of independent values each thread is reducing at once.
   static __shared__ float shared[num][32];
-  int lane_id = threadIdx.x & 0x1f;
-  int wid = threadIdx.x >> 5;
+  int lane_id = threadIdx.x & 0x1f; 
+  int wid = threadIdx.x >> 5; // warp id
 
   warpReduce<ReduceType::kMax, num>(pval);
 

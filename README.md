@@ -1,3 +1,1 @@
-# llmsys_f25_hw4
-
-Public repository for Assignment 4 of 11-868 LLM Systems.
+The training log w & w/o fusion is stored in `train_with_fusion.log` and `train_without_fusion.log`

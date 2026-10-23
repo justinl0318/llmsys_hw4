@@ -14,29 +14,29 @@ const float LN_EPSILON = 1e-8f;
 
 
 /**
-@brief: ker_layer_norm
-Standard layer normalization.
-It will not only output the layer norm result,
-  but also outputs variance.
-  may also output means, depends on whether
-  the means argument is nullptr
+  @brief: ker_layer_norm
+  Standard layer normalization.
+  It will not only output the layer norm result,
+    but also outputs variance.
+    may also output means, depends on whether
+    the means argument is nullptr
 
-@thread
-gridDim.x = batch_size * seq_len
-blockDim.x = hidden_size
+  @thread
+  gridDim.x = batch_size * seq_len
+  blockDim.x = hidden_size
 
-@param
-ln_res: [batch_size * seq_len, hidden_size], ln result.
-vars: [batch_size * seq_len], variance per token
-means: [batch_size * seq_len], means per token, can be nullptr
-inp: [batch_size * seq_len, hidden_size], ln input.
-scale: [hidden_size], ln scale
-bias: [hidden_size], ln bias
-*/
+  @param ln_res: [batch_size * seq_len, hidden_size], ln result.
+  @param vars: [batch_size * seq_len], variance per token
+  @param means: [batch_size * seq_len], means per token, can be nullptr
+  @param inp: [batch_size * seq_len, hidden_size], ln input.
+  @param scale: [hidden_size], ln scale
+  @param bias: [hidden_size], ln bias
+  */
 template <typename T>
 __global__ void ker_layer_norm(T *ln_res, T *vars, T *means, const T *inp,
                                const T *scale, const T *bias, int hidden_size) {
-  
+  // Launch configuration:
+  // one block handles one token
   /// BEGIN ASSIGN4_2_1
   /// TODO
   // Hints:
@@ -44,19 +44,52 @@ __global__ void ker_layer_norm(T *ln_res, T *vars, T *means, const T *inp,
   // 2. Compute reduce sum with blockReduce and add epsilon with LN_EPSILON
   // 3. Compute layernorm result with reinterpret_cast by casting to float4 for speedup
   
-  // Step 1
+  // Step 1: compute sum and square_sum
   float l_sum = 0;
-  const float4 *inp_f4 = reinterpret_cast<const float4 *>(inp) + blockIdx.x * hidden_size;  
+  float l_square_sum = 0;
+  // (B, T, C) is flattened to 2D (B*T, C)
+  const float4 *inp_f4 = reinterpret_cast<const float4 *>(inp) + blockIdx.x * hidden_size; // move inp to the starting row that corresponds to the token this block will handle
   for (uint idx = threadIdx.x; idx < hidden_size; idx += blockDim.x) {
     float4 val = inp_f4[idx];
     l_sum += val.x + val.y + val.z + val.w;
+    l_square_sum += val.x * val.x + val.y * val.y + val.z * val.z + val.w * val.w;
   }
 
-  // Step 2
+  // Step 2: compute mean and var
+  float reduce_vals[2] = {l_sum, l_square_sum};
+  // use blockReduce because each block may have > 32 threads (> 1 warp)
+  blockReduce<ReduceType::kSum, 2>(reduce_vals);
 
-  // Step 3
-  
-  assert(false && "Not Implemented");
+  __shared__ float s_mean;
+  __shared__ float s_var;
+  if (threadIdx.x == 0) {
+    float embed_dim = hidden_size * 4.0f;
+    s_mean = reduce_vals[0] / embed_dim;
+    s_var = reduce_vals[1] / embed_dim - s_mean * s_mean + LN_EPSILON; // var(x) = E[X^2] - E[X]^2
+    means[blockIdx.x] = s_mean;
+    vars[blockIdx.x] = s_var;
+  }
+
+  __syncthreads();
+
+  // Step 3: normalize each token
+  float mean = s_mean;
+  float inverse_std = rsqrtf(s_var);
+
+  float4 *output_f4 = reinterpret_cast<float4 *>(ln_res) + blockIdx.x * hidden_size;
+  const float4 *scale_f4 = reinterpret_cast<const float4 *>(scale);
+  const float4 *bias_f4 = reinterpret_cast<const float4 *>(bias);
+  for (uint idx = threadIdx.x; idx < hidden_size; idx += blockDim.x) {
+    float4 val = inp_f4[idx];
+    float4 gamma = scale_f4[idx];
+    float4 beta = bias_f4[idx];
+
+    val.x = (val.x - mean) * inverse_std * gamma.x + beta.x;
+    val.y = (val.y - mean) * inverse_std * gamma.y + beta.y;
+    val.z = (val.z - mean) * inverse_std * gamma.z + beta.z;
+    val.w = (val.w - mean) * inverse_std * gamma.w + beta.w;
+    output_f4[idx] = val;
+  }
   /// END ASSIGN4_2_1
 }
 
@@ -124,34 +157,35 @@ void launch_layernorm(float *ln_res, float *vars, float *means,
 }
 
 /**
-@brief: ker_ln_bw_dgamma_dbetta
-Layer norm backward kernel, compute the gradient of gamma and betta.
-dbetta = sum(dout, dim=0)
-dgamma = sum(xhat * dout, dim=0)
-xhat = (input - mean) * rsqrt(var) or
-  (output - betta) / gamma
+  @brief: ker_ln_bw_dgamma_dbetta
+  Layer norm backward kernel, compute the gradient of gamma and betta.
+  dbetta = sum(dout, dim=0)
+  dgamma = sum(xhat * dout, dim=0)
+  xhat = (input - mean) * rsqrt(var) or
+    (output - betta) / gamma
 
-@thread
-gridDim.x = hidden_size / 32
-blockDim.x = 32
-blockDim.y = 32
+  @thread
+  gridDim.x = hidden_size / 32
+  blockDim.x = 32
+  blockDim.y = 32
 
-@param
-gamma_grad: [hidden_size], gradient of gamma
-betta_grad: [hidden_size], gradient of betta
-out_grad: [batch_size * seq_len, hidden_size], gradient of betta ln output
-inp_or_out: [batch_size * seq_len, hidden_size], ln output if means is nullptr
-  ln input if means is not nullptr
-gamma: [hidden_size], gamma of ln,
-  used to compute xhat, maybe nullptr
-betta: [hidden_size], betta of ln,
-  used to compute xhat, maybe nullptr
-vars: [batch_size * seq_len], variance of ln forward,
-  used to compute xhat, maybe nullptr
-means: [batch_size * seq_len], mean of ln forward,
-  used to compute xhat, maybe nullptr
-(gamma && betta) ^ (vars && means) should be true
-*/
+  @param gamma_grad: [hidden_size], gradient of gamma
+  @param betta_grad: [hidden_size], gradient of betta
+  @param out_grad: [batch_size * seq_len, hidden_size], gradient of betta ln output
+  @param inp_or_out: [batch_size * seq_len, hidden_size], ln output if means is nullptr
+    ln input if means is not nullptr
+  @param gamma: [hidden_size], gamma of ln,
+    used to compute xhat, maybe nullptr
+  @param betta: [hidden_size], betta of ln,
+    used to compute xhat, maybe nullptr
+  @param vars: [batch_size * seq_len], variance of ln forward,
+    used to compute xhat, maybe nullptr
+  @param means: [batch_size * seq_len], mean of ln forward,
+    used to compute xhat, maybe nullptr
+  (gamma && betta) ^ (vars && means) should be true
+  @param rows: (batch_size * seq_len,)
+  @param width: (hidden_dim,)
+  */
 template <typename T>
 __global__ void ker_ln_bw_dgamma_dbetta(T *gamma_grad, T *betta_grad,
                                         const T *out_grad,
@@ -177,49 +211,99 @@ __global__ void ker_ln_bw_dgamma_dbetta(T *gamma_grad, T *betta_grad,
   cg::thread_block b = cg::this_thread_block();
   cg::thread_block_tile<TILE_DIM> g = cg::tiled_partition<TILE_DIM>(b);
 
-  // Step 1
+  // Step 1: compute d_beta & d_gamma
+  int col = blockIdx.x * TILE_DIM + threadIdx.x;
 
-  // Step 2
-  
-  // Step 3
-  
-  // Step 4
+  float d_beta = 0.0f; // partial sum for column `col` using rows `threadIdx.y`, `threadIdx.y + 32`, ...
+  float d_gamma = 0.0f;
+  if (col < width) {
+    for (int row = threadIdx.y; row < rows; row += TILE_DIM) { // tile-wise padding in the row dimension
+      int idx = row * width + col;
 
-  assert(false && "Not Implemented");
+      float dy = (float)out_grad[idx];
+      float xhat;
+      if (means != nullptr) {
+        xhat = ((float)inp[idx] - (float)means[row]) * rsqrtf((float)vars[row]);
+      } else { // y = gamma * x_hat + beta => x_hat = (y - beta) / gamma
+        xhat = ((float)inp[idx] - (float)betta[col]) / (float)gamma[col];
+      }
+
+      d_beta += dy;
+      d_gamma += dy * xhat;
+    }
+  }
+
+  // Step 2: store the partial gradients into shared memory
+  // transpose the index to (x, y) so that the partial sum of column `col` from (row=0,col), (row=1,col), ..., (row=31,col) is stored as a single row instead of a column
+  //
+  // Note: CUDA fills a warp by increasing `x` first, then `y`, then `z`, where every 32 threads form a warp.
+  // Since in the launch config, we define the dimension `x` as the column, and the dimension `y` as the row,
+  // so in this case, one warp correspond to one horizontal row of 32 columns.
+  //
+  // The reason to transpose here is bcuz warp shuffle only works between threads in the same warp,
+  // and since in this case one warp correspond to one horizontal row, so we need to store the 
+  // 32 partial sum of d_beta_col as a row instead of a column.
+  betta_buffer[threadIdx.x][threadIdx.y] = d_beta;
+  gamma_buffer[threadIdx.x][threadIdx.y] = d_gamma;
+
+  __syncthreads();
+  
+  // Step 3: reduce the partial sum using g.shfl_down()
+  float d_beta_sum = betta_buffer[threadIdx.y][threadIdx.x]; // one warp read one row: all 32 partial sum of d_beta_col
+  float d_gamma_sum = gamma_buffer[threadIdx.y][threadIdx.x];
+  for (int offset = TILE_DIM / 2; offset > 0; offset >>= 1) {
+    d_beta_sum += g.shfl_down(d_beta_sum, offset);
+    d_gamma_sum += g.shfl_down(d_gamma_sum, offset);
+  }
+  // shfl_down vs shfl_xor:
+  // 1. shfl_down: sends value from higher lane (thread) to lower lane. In the end only thread 0 gets the full reduced val.
+  // ex: start = [a, b, c, d]
+  //  offset = 2 [a+c, b+d, c, d]
+  //  offset = 1 [a+b+c+d, b+c+d, c+d, d]
+  // 2. shfl_xor: exchange values with other lanes. In the end all threads in the warp get the full reduced val.
+  // ex: start = [a, b, c, d]
+  //  offset = 2 [a+c, b+d, c+a, d+b]
+  //  offset = 1 [a+b+c+d, a+b+c+d, a+b+c+d, a+b+c+d]
+  
+  // Step 4: write the reduced result back to global mem
+  // after g.shfl_down, only the first thread in each warp gets the full reduced value
+  if (threadIdx.x == 0) {
+    int out_col = blockIdx.x * TILE_DIM + threadIdx.y; // use threadIdx.y here, as it represents which column this warp reduced (d_beta_col)
+    if (out_col < width) {
+      betta_grad[out_col] = d_beta_sum;
+      gamma_grad[out_col] = d_gamma_sum;
+    }
+  }
+
   /// END ASSIGN4_2_2
 }
 
 /**
-@brief: ker_ln_bw_dinp
-Layer norm backward kernel, compute the gradient of input.
-dinp = (dxhat - (sum(dxhat) + xhat * sum(dxhat * xhat)) / hidden_dim)
-  * rsqrt(var)
-xhat = (input - mean) * rsqrt(var) if mean is not nullptr
-       (output - betta) / gamma if mean is nullptr
-dxhat = dout * gamma
+  @brief: ker_ln_bw_dinp
+  Layer norm backward kernel, compute the gradient of input.
+  dinp = (dxhat - (sum(dxhat) + xhat * sum(dxhat * xhat)) / hidden_dim)
+    * rsqrt(var)
+  xhat = (input - mean) * rsqrt(var) if mean is not nullptr
+        (output - betta) / gamma if mean is nullptr
+  dxhat = dout * gamma
 
 
-@thread
-gridDim.x = batch_size * seq_len
-blockDim.x = hidden_size
+  @thread
+  gridDim.x = batch_size * seq_len
+  blockDim.x = hidden_size
 
-@param
-inp_grad: [batch_size * seq_len, hidden_size], gradient of betta ln output
-out_grad: [batch_size * seq_len, hidden_size], gradient of betta ln output
-residual_grad: [batch_size * seq_len, hidden_size], gradient of residual input,
-  usually appear in pre-layer-norm for transformer layer, maybe nullptr
-inp_or_out: [batch_size * seq_len, hidden_size], ln output if means is nullptr
-  ln input if means is not nullptr
-gamma: [hidden_size], gamma of ln,
-  used to compute xhat and dxhat
-betta: [hidden_size], betta of ln,
-  used to compute xhat, maybe nullptr
-vars: [batch_size * seq_len], variance of ln forward,
-  used to compute xhat and dinp
-means: [batch_size * seq_len], mean of ln forward,
-  used to compute xhat, maybe nullptr
-*/
-template <typename T>
+  @param inp_grad: [batch_size * seq_len, hidden_size], gradient of betta ln output
+  @param out_grad: [batch_size * seq_len, hidden_size], gradient of betta ln output
+  @param residual_grad: [batch_size * seq_len, hidden_size], gradient of residual input,
+    usually appear in pre-layer-norm for transformer layer, maybe nullptr
+  @param inp_or_out: [batch_size * seq_len, hidden_size], ln output if means is nullptr
+    ln input if means is not nullptr
+  @param gamma: [hidden_size], gamma of ln, used to compute xhat and dxhat
+  @param betta: [hidden_size], betta of ln, used to compute xhat, maybe nullptr
+  @param vars: [batch_size * seq_len], variance of ln forward, used to compute xhat and dinp
+  @param means: [batch_size * seq_len], mean of ln forward, used to compute xhat, maybe nullptr
+  */
+  template <typename T>
 __global__ void ker_ln_bw_dinp(T *inp_grad, const T *out_grad, const T *inp,
                                const T *gamma, const T *betta, const T *vars,
                                const T *means, int hidden_dim) {
@@ -231,16 +315,108 @@ __global__ void ker_ln_bw_dinp(T *inp_grad, const T *out_grad, const T *inp,
   // 2. Compute xhat with reinterpret_cast by casting to float4 for speedup
   // 3. Compute reduce sum for dxhat and dxhat*xhat with blockReduce
   // 4. Compute final gradient
+
+  // Launch config: one block is responsible for 1 token / row
   
   // Step 1
- 
-  // Step 2
-   
+  const float4 *out_grad_f4 = reinterpret_cast<const float4 *>(out_grad) + blockIdx.x * hidden_dim;
+  const float4 *inp_f4 = reinterpret_cast<const float4 *>(inp) + blockIdx.x * hidden_dim;
+  const float4 *gamma_f4 = reinterpret_cast<const float4 *>(gamma);
+  const float4 *betta_f4 = reinterpret_cast<const float4 *>(betta);
+
+  float l_sum = 0.0f; // partial sum of dxhat
+  float l_sum_xhat = 0.0f; // partial sum of dxhat * xhat
+  for (int idx = threadIdx.x; idx < hidden_dim; idx += blockDim.x) {
+    // Step 1: dxhat = dout * gamma
+    float4 dy = out_grad_f4[idx];
+    float4 g = gamma_f4[idx];
+
+    float4 dxhat;
+    dxhat.x = dy.x * g.x;
+    dxhat.y = dy.y * g.y;
+    dxhat.z = dy.z * g.z;
+    dxhat.w = dy.w * g.w;
+
+    // Step 2: compute xhat
+    float4 x = inp_f4[idx];
+    float4 xhat;
+
+    if (means != nullptr) {
+      float mean = means[blockIdx.x];
+      float inv_std = rsqrtf(vars[blockIdx.x]);
+
+      xhat.x = (x.x - mean) * inv_std;
+      xhat.y = (x.y - mean) * inv_std;
+      xhat.z = (x.z - mean) * inv_std;
+      xhat.w = (x.w - mean) * inv_std;
+    } else {
+      float4 b = betta_f4[idx];
+
+      xhat.x = (x.x - b.x) / g.x;
+      xhat.y = (x.y - b.y) / g.y;
+      xhat.z = (x.z - b.z) / g.z;
+      xhat.w = (x.w - b.w) / g.w;
+    }
+
+    // partial sums needed for Step 3
+    l_sum += dxhat.x + dxhat.y + dxhat.z + dxhat.w;
+    l_sum_xhat += dxhat.x * xhat.x + dxhat.y * xhat.y + dxhat.z * xhat.z + dxhat.w * xhat.w;
+  }
+
   // Step 3
+  float reduce_vals[2] = {l_sum, l_sum_xhat};
+  blockReduce<ReduceType::kSum, 2>(reduce_vals);
+
+  __shared__ float s_sum_dxhat; // full sum of dxhat
+  __shared__ float s_sum_dxhat_xhat; // full sum of dxhat * xhat
+  if (threadIdx.x == 0) {
+      s_sum_dxhat = reduce_vals[0];
+      s_sum_dxhat_xhat = reduce_vals[1];
+  }
+
+  __syncthreads();
  
   // Step 4
-  
-  assert(false && "Not Implemented");
+  float inv_std = rsqrtf(vars[blockIdx.x]);
+  float H = hidden_dim * 4.0f;
+
+  float4 *inp_grad_f4 = reinterpret_cast<float4 *>(inp_grad) + blockIdx.x * hidden_dim;
+  for (int idx = threadIdx.x; idx < hidden_dim; idx += blockDim.x) {
+    float4 dy = out_grad_f4[idx];
+    float4 g = gamma_f4[idx];
+    float4 x = inp_f4[idx];
+
+    float4 dxhat;
+    dxhat.x = dy.x * g.x;
+    dxhat.y = dy.y * g.y;
+    dxhat.z = dy.z * g.z;
+    dxhat.w = dy.w * g.w;
+
+    float4 xhat;
+    if (means != nullptr) {
+      float mean = means[blockIdx.x];
+
+      xhat.x = (x.x - mean) * inv_std;
+      xhat.y = (x.y - mean) * inv_std;
+      xhat.z = (x.z - mean) * inv_std;
+      xhat.w = (x.w - mean) * inv_std;
+    } else {
+      float4 b = betta_f4[idx];
+
+      xhat.x = (x.x - b.x) / g.x;
+      xhat.y = (x.y - b.y) / g.y;
+      xhat.z = (x.z - b.z) / g.z;
+      xhat.w = (x.w - b.w) / g.w;
+    }
+
+    float4 dx;
+    dx.x = (dxhat.x - (s_sum_dxhat + xhat.x * s_sum_dxhat_xhat) / H) * inv_std;
+    dx.y = (dxhat.y - (s_sum_dxhat + xhat.y * s_sum_dxhat_xhat) / H) * inv_std;
+    dx.z = (dxhat.z - (s_sum_dxhat + xhat.z * s_sum_dxhat_xhat) / H) * inv_std;
+    dx.w = (dxhat.w - (s_sum_dxhat + xhat.w * s_sum_dxhat_xhat) / H) * inv_std;
+
+    inp_grad_f4[idx] = dx;
+  }
   /// END ASSIGN4_2_2
 }
 extern "C" {

@@ -383,29 +383,42 @@ class MatMul(Function):
 class Attn_Softmax(Function):
     @staticmethod
     def forward(ctx: Context, inp: Tensor, mask: Tensor) -> Tensor:
-      #   BEGIN ASSIGN4_1_1
-      raise NotImplementedError("Need to implement for Assignment 4")
-      #   END ASSIGN4_1_1
+        #   BEGIN ASSIGN4_1_1
+        out = inp.f.attn_softmax_fw(inp, mask)
+        ctx.save_for_backward(out, mask)
+        return out
+        #   END ASSIGN4_1_1
 
     @staticmethod
     def backward(ctx: Context, out_grad: Tensor) -> Tensor:
-      #   BEGIN ASSIGN4_1_2
-      raise NotImplementedError("Need to implement for Assignment 4")
-      #   END ASSIGN4_1_2
+        #   BEGIN ASSIGN4_1_2
+        # out_grad: dL/ds
+        # grad_input: dL/dx
+        (soft_output, _) = ctx.saved_values
+        grad_input = out_grad.f.attn_softmax_bw(out_grad, soft_output)
+        return grad_input, 0.0 # return 0.0 too because the padding mask dont need any gradient
+        #   END ASSIGN4_1_2
 
 
 class LayerNorm(Function):
     @staticmethod
     def forward(ctx: Context, inp: Tensor, gamma: Tensor, beta: Tensor) -> Tensor:
-      #   BEGIN ASSIGN4_2_1
-      raise NotImplementedError("Need to implement for Assignment 4")
-      #   END ASSIGN4_2_1
+        #   BEGIN ASSIGN4_2_1
+        out, var, mean = inp.f.layernorm_fw(inp, gamma, beta)
+        ctx.save_for_backward(inp, gamma, beta, var, mean)
+        return out
+        #   END ASSIGN4_2_1
 
     @staticmethod
     def backward(ctx: Context, out_grad: Tensor) -> Tensor:
-      #   BEGIN ASSIGN4_2_2
-      raise NotImplementedError("Need to implement for Assignment 4")
-      #   END ASSIGN4_2_2
+        #   BEGIN ASSIGN4_2_2
+        inp, gamma, beta, var, mean = ctx.saved_values
+        inp_grad, gamma_grad, beta_grad = inp.f.layernorm_bw(
+            out_grad, inp, gamma, beta, var, mean
+        )
+
+        return inp_grad, gamma_grad, beta_grad
+        #   END ASSIGN4_2_2
 
 
 # Helpers for Constructing tensors

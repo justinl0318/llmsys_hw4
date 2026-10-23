@@ -1,0 +1,19 @@
+(jyo) [jyo@v004 llmsys_hw4]$ python -m project.run_machine_translation --use-fused-kernel True
+Using the latest cached version of the dataset since bbaaaa/iwslt14-de-en-preprocess couldn't be found on the Hugging Face Hub
+Found the latest cached dataset configuration 'de-en' at /jet/home/jyo/.cache/huggingface/datasets/bbaaaa___iwslt14-de-en-preprocess/de-en/1.0.0/c56d7dc0dcc7c6e27d0a917a0ab0f40083999465 (last modified on Tue Sep 22 11:49:27 2026).
+Using the latest cached version of the dataset since bbaaaa/iwslt14-de-en-preprocess couldn't be found on the Hugging Face Hub
+Found the latest cached dataset configuration 'de-en' at /jet/home/jyo/.cache/huggingface/datasets/bbaaaa___iwslt14-de-en-preprocess/de-en/1.0.0/c56d7dc0dcc7c6e27d0a917a0ab0f40083999465 (last modified on Tue Sep 22 11:49:27 2026).
+Using the latest cached version of the dataset since bbaaaa/iwslt14-de-en-preprocess couldn't be found on the Hugging Face Hub
+Found the latest cached dataset configuration 'de-en' at /jet/home/jyo/.cache/huggingface/datasets/bbaaaa___iwslt14-de-en-preprocess/de-en/1.0.0/c56d7dc0dcc7c6e27d0a917a0ab0f40083999465 (last modified on Tue Sep 22 11:49:27 2026).
+{
+    "data_size": {
+        "train": 97976,
+        "validation": 4512,
+        "test": 100
+    }
+}
+[00:00:00] Pre-processing sequences       ████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 0        /        0
+[00:00:00] Tokenize words                 ████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 87929    /    87929
+[00:00:00] Count pairs                    ████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 87929    /    87929
+[00:00:00] Compute merges                 ████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 9741     /     9741
+Training (epoch 0 / 1): 100%|██████████████████████████████████████████████████████████████████████████████████████| 157/157 [51:05<00:00, 19.53s/it, loss=5.99, lr=0.02, tokens_per_sec=178]
