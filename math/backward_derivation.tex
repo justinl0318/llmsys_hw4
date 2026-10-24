@@ -1,0 +1,412 @@
+
+\documentclass{article}
+\usepackage{graphicx}
+\usepackage{amsmath}
+
+\title{math}
+\author{Justin Lee}
+\date{October 2026}
+
+\begin{document}
+\maketitle
+
+\section{Softmax Backward}
+
+Start from the chain rule:
+\[
+\frac{\partial L}{\partial x_j}
+=\sum_i\frac{\partial L}{\partial s_i}
+\frac{\partial s_i}{\partial x_j}
+\]
+
+Define:
+\[
+g_i=\frac{\partial L}{\partial s_i}
+\]
+
+And plug in:
+\[
+\frac{\partial s_i}{\partial x_j}
+=s_i(\delta_{ij}-s_j)
+\]
+
+So:
+\[
+\frac{\partial L}{\partial x_j}
+=\sum_i g_i s_i(\delta_{ij}-s_j)
+\]
+
+Expand:
+\[
+=\sum_i g_i s_i\delta_{ij}
+-\sum_i g_i s_i s_j
+\]
+
+Now, $\delta_{ij}$ is 1 only when $i=j$, so:
+\[
+\sum_i g_i s_i\delta_{ij}=g_j s_j
+\]
+
+And $s_j$ does not depend on the summation index $i$, so:
+\[
+\sum_i g_i s_i s_j=s_j\sum_i g_i s_i
+\]
+
+Therefore:
+\[
+\frac{\partial L}{\partial x_j}
+=g_j s_j-s_j\sum_i g_i s_i
+\]
+
+Factor out $s_j$:
+\[
+\boxed{
+\frac{\partial L}{\partial x_j}
+=s_j\left(g_j-\sum_i g_i s_i\right)
+}
+\]
+
+\section{LayerNorm Backward}
+
+\subsection{Forward Equations}
+
+For one token with hidden dimension $H$:
+
+\[
+\mu=\frac{1}{H}\sum_j x_j
+\]
+
+\[
+\sigma^2=\frac{1}{H}\sum_j(x_j-\mu)^2
+\]
+
+Define:
+\[
+r=\frac{1}{\sqrt{\sigma^2+\epsilon}}
+\]
+
+The normalized input is:
+\[
+\hat{x}_i=(x_i-\mu)r
+\]
+
+The LayerNorm output is:
+\[
+y_i=\gamma_i\hat{x}_i+\beta_i
+\]
+
+Define the upstream gradient:
+\[
+dy_i=\frac{\partial L}{\partial y_i}
+\]
+
+\subsection{Gradients of Gamma and Beta}
+
+From:
+\[
+y_i=\gamma_i\hat{x}_i+\beta_i
+\]
+
+We have:
+\[
+\frac{\partial y_i}{\partial\beta_i}=1,
+\qquad
+\frac{\partial y_i}{\partial\gamma_i}=\hat{x}_i
+\]
+
+Therefore, for a single token:
+\[
+d\beta_i=dy_i
+\]
+\[
+d\gamma_i=dy_i\hat{x}_i
+\]
+
+Since gamma and beta are shared across all tokens,
+we sum the gradients over all rows:
+
+\[
+\boxed{d\beta_i=\sum_{\text{rows}}dy_i}
+\]
+
+\[
+\boxed{d\gamma_i=\sum_{\text{rows}}dy_i\hat{x}_i}
+\]
+
+\subsection{Gradient of Input}
+
+Define:
+\[
+g_i=d\hat{x}_i
+=\frac{\partial L}{\partial\hat{x}_i}
+=dy_i\gamma_i
+\]
+
+We want:
+\[
+dx_i=\frac{\partial L}{\partial x_i}
+\]
+
+There are three gradient paths from $x_i$ to the loss.
+
+\subsubsection{Path 1: Direct Path}
+
+Since:
+\[
+\hat{x}_i=(x_i-\mu)r
+\]
+
+Holding $\mu$ and $r$ fixed:
+\[
+\frac{\partial\hat{x}_i}{\partial x_i}=r
+\]
+
+Therefore:
+\[
+\boxed{dx_i^{(1)}=g_i r}
+\]
+
+\subsubsection{Path 2: Through the Mean}
+
+Recall:
+\[
+\mu=\frac{1}{H}\sum_j x_j
+\]
+
+By the chain rule:
+\[
+\frac{\partial L}{\partial\mu}
+=
+\sum_j
+\frac{\partial L}{\partial\hat{x}_j}
+\frac{\partial\hat{x}_j}{\partial\mu}
+\]
+
+Since:
+\[
+\hat{x}_j=(x_j-\mu)r
+\]
+
+Holding $r$ fixed:
+\[
+\frac{\partial\hat{x}_j}{\partial\mu}=-r
+\]
+
+Thus:
+\[
+\frac{\partial L}{\partial\mu}
+=
+\sum_j g_j(-r)
+=
+-r\sum_j g_j
+\]
+
+Also:
+\[
+\frac{\partial\mu}{\partial x_i}=\frac{1}{H}
+\]
+
+Therefore:
+\[
+dx_i^{(2)}
+=
+\frac{\partial L}{\partial\mu}
+\frac{\partial\mu}{\partial x_i}
+\]
+
+\[
+\boxed{
+dx_i^{(2)}=-\frac{r}{H}\sum_j g_j
+}
+\]
+
+\subsubsection{Path 3: Through the Variance}
+
+Recall:
+\[
+\sigma^2=\frac{1}{H}\sum_j(x_j-\mu)^2
+\]
+
+And:
+\[
+r=(\sigma^2+\epsilon)^{-1/2}
+\]
+
+Differentiate $r$ with respect to $\sigma^2$:
+\[
+\frac{\partial r}{\partial\sigma^2}
+=
+-\frac{1}{2}(\sigma^2+\epsilon)^{-3/2}
+\]
+
+Since:
+\[
+r^3=(\sigma^2+\epsilon)^{-3/2}
+\]
+
+We get:
+\[
+\frac{\partial r}{\partial\sigma^2}
+=-\frac{1}{2}r^3
+\]
+
+Now apply the chain rule:
+\[
+\frac{\partial L}{\partial\sigma^2}
+=
+\sum_j
+\frac{\partial L}{\partial\hat{x}_j}
+\frac{\partial\hat{x}_j}{\partial\sigma^2}
+\]
+
+Since:
+\[
+\hat{x}_j=(x_j-\mu)r
+\]
+
+Holding $\mu$ fixed:
+\[
+\frac{\partial\hat{x}_j}{\partial\sigma^2}
+=
+(x_j-\mu)\frac{\partial r}{\partial\sigma^2}
+\]
+
+\[
+=-\frac{1}{2}r^3(x_j-\mu)
+\]
+
+Therefore:
+\[
+\boxed{
+\frac{\partial L}{\partial\sigma^2}
+=
+-\frac{1}{2}r^3
+\sum_j g_j(x_j-\mu)
+}
+\]
+
+Next, differentiate the variance:
+\[
+\frac{\partial\sigma^2}{\partial x_i}
+=
+\frac{2(x_i-\mu)}{H}
+\]
+
+The terms involving the derivative of $\mu$ cancel
+because $\sum_j(x_j-\mu)=0$.
+
+By the chain rule:
+\[
+dx_i^{(3)}
+=
+\frac{\partial L}{\partial\sigma^2}
+\frac{\partial\sigma^2}{\partial x_i}
+\]
+
+Substitute:
+\[
+dx_i^{(3)}
+=
+\left(
+-\frac{1}{2}r^3
+\sum_j g_j(x_j-\mu)
+\right)
+\frac{2(x_i-\mu)}{H}
+\]
+
+Cancel the factor of 2:
+\[
+dx_i^{(3)}
+=
+-\frac{r^3}{H}(x_i-\mu)
+\sum_j g_j(x_j-\mu)
+\]
+
+Since:
+\[
+\hat{x}_i=(x_i-\mu)r
+\]
+
+We have:
+\[
+x_i-\mu=\frac{\hat{x}_i}{r}
+\]
+
+Substitute:
+\[
+dx_i^{(3)}
+=
+-\frac{r^3}{H}
+\frac{\hat{x}_i}{r}
+\sum_j g_j\frac{\hat{x}_j}{r}
+\]
+
+Simplify:
+\[
+\boxed{
+dx_i^{(3)}
+=
+-\frac{r}{H}\hat{x}_i
+\sum_j g_j\hat{x}_j
+}
+\]
+
+\subsection{Final Input Gradient}
+
+Add the three gradient paths:
+
+\[
+dx_i=dx_i^{(1)}+dx_i^{(2)}+dx_i^{(3)}
+\]
+
+\[
+dx_i
+=
+g_i r
+-\frac{r}{H}\sum_j g_j
+-\frac{r}{H}\hat{x}_i\sum_j g_j\hat{x}_j
+\]
+
+Factor out $r$:
+
+\[
+\boxed{
+dx_i
+=
+r\left[
+g_i
+-\frac{1}{H}\sum_j g_j
+-\frac{\hat{x}_i}{H}\sum_j g_j\hat{x}_j
+\right]
+}
+\]
+
+Recall:
+\[
+g_i=d\hat{x}_i=dy_i\gamma_i
+\]
+
+And:
+\[
+r=\frac{1}{\sqrt{\sigma^2+\epsilon}}
+\]
+
+Therefore, the final LayerNorm backward formula is:
+
+\[
+\boxed{
+dx_i=
+\frac{1}{\sqrt{\sigma^2+\epsilon}}
+\left[
+d\hat{x}_i
+-
+\frac{
+\sum_j d\hat{x}_j
++
+\hat{x}_i\sum_j d\hat{x}_j\hat{x}_j
+}{H}
+\right]
+}
+\]
+
+\end{document}
